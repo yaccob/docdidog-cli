@@ -1,0 +1,168 @@
+#!/bin/sh
+set -e
+
+VERSION="1.7.0"
+DEFAULT_SERVER="http://localhost:3300"
+
+# --- Usage ---
+usage() {
+  cat <<EOF
+docdidog v${VERSION} — Markdown to PDF/HTML with diagrams and LaTeX math
+
+Usage: docdidog [OPTIONS] <input.md>
+
+Options:
+  -t, --to FORMAT       Output format: pdf, html (default: html)
+  -o, --output FILE     Write output to FILE (default: stdout)
+  --watch               Watch for changes and regenerate (requires -o)
+  --server URL          Server URL (default: $DEFAULT_SERVER)
+  --maxwidth WIDTH      Max content width for HTML output (default: 60em)
+  --center-math         Center block formulas (default: left-aligned)
+  -v, --version         Show version
+  -h, --help            Show this help
+
+Requires a running docdidog server. Start one with:
+  docdidog-serve                        # local (requires pandoc + tools)
+  docker run -d -p 3300:3300 yaccob/docdidog docdidog-serve
+
+Diagram types: plantuml, graphviz/dot, mermaid, markmap, ditaa, tikz,
+  nomnoml, dbml, d2, wavedrom, dir
+With Kroki: + bpmn, erd, pikchr, svgbob, excalidraw, vega, ...
+LaTeX math: \$...\$ (inline) and \$\$...\$\$ (block)
+EOF
+  exit 0
+}
+
+# --- Argument parsing ---
+FORMAT=""
+WATCH=false
+SERVER_URL=""
+OUTPUT_FILE=""
+MAXWIDTH="60em"
+CENTER_MATH=false
+INPUT=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -t|--to)
+      if [ -n "$FORMAT" ]; then
+        echo "Error: -t/--to can only be specified once." >&2
+        exit 1
+      fi
+      case "$2" in
+        pdf)  FORMAT=pdf ;;
+        html) FORMAT=html ;;
+        *)    echo "Error: Unknown format '$2'. Use 'pdf' or 'html'." >&2; exit 1 ;;
+      esac
+      shift 2 ;;
+    --watch)        WATCH=true; shift ;;
+    --server)       SERVER_URL="$2"; shift 2 ;;
+    -o|--output)    OUTPUT_FILE="$2"; shift 2 ;;
+    --maxwidth)     MAXWIDTH="$2"; shift 2 ;;
+    --center-math)  CENTER_MATH=true; shift ;;
+    -v|--version)   echo "docdidog v${VERSION}"; exit 0 ;;
+    -h|--help)      usage ;;
+    -*)             echo "Unknown option: $1" >&2; echo "Run 'docdidog --help' for usage." >&2; exit 1 ;;
+    *)              INPUT="$1"; shift ;;
+  esac
+done
+
+if [ -z "$INPUT" ]; then
+  echo "Error: No input file specified." >&2
+  echo "Run 'docdidog --help' for usage." >&2
+  exit 1
+fi
+
+if [ ! -f "$INPUT" ]; then
+  echo "Error: File '$INPUT' not found." >&2
+  exit 1
+fi
+
+# Default format
+if [ -z "$FORMAT" ]; then
+  FORMAT=html
+fi
+
+# Default server
+if [ -z "$SERVER_URL" ]; then
+  SERVER_URL="$DEFAULT_SERVER"
+fi
+
+# --watch requires -o
+if [ "$WATCH" = true ] && [ -z "$OUTPUT_FILE" ]; then
+  echo "Error: --watch requires -o FILE to specify an output file." >&2
+  exit 1
+fi
+
+# --- Render via server HTTP API ---
+render() {
+  local params="format=${FORMAT}&maxwidth=${MAXWIDTH}"
+  if [ "$CENTER_MATH" = true ]; then
+    params="${params}&center_math=true"
+  fi
+
+  if [ -n "$OUTPUT_FILE" ]; then
+    echo "Generating ${OUTPUT_FILE} ..." >&2
+    local http_code
+    http_code=$(curl -sf -w "%{http_code}" \
+      -X POST "${SERVER_URL}/render?${params}" \
+      --data-binary @"$INPUT" \
+      -o "$OUTPUT_FILE" 2>/dev/null) || true
+
+    if [ "$http_code" != "200" ]; then
+      if [ -z "$http_code" ] || [ "$http_code" = "000" ]; then
+        echo "Error: Cannot connect to server at $SERVER_URL" >&2
+        echo "Start a server with: docdidog-serve" >&2
+      else
+        echo "Error: Server returned HTTP $http_code" >&2
+        if [ -f "$OUTPUT_FILE" ]; then
+          cat "$OUTPUT_FILE" >&2
+          rm -f "$OUTPUT_FILE"
+        fi
+      fi
+      return 1
+    fi
+    echo "  -> $OUTPUT_FILE" >&2
+  else
+    echo "Generating ${FORMAT} ..." >&2
+    local http_code tmpfile
+    tmpfile=$(mktemp)
+    http_code=$(curl -sf -w "%{http_code}" \
+      -X POST "${SERVER_URL}/render?${params}" \
+      --data-binary @"$INPUT" \
+      -o "$tmpfile" 2>/dev/null) || true
+
+    if [ "$http_code" != "200" ]; then
+      if [ -z "$http_code" ] || [ "$http_code" = "000" ]; then
+        echo "Error: Cannot connect to server at $SERVER_URL" >&2
+        echo "Start a server with: docdidog-serve" >&2
+      else
+        echo "Error: Server returned HTTP $http_code" >&2
+        cat "$tmpfile" >&2
+      fi
+      rm -f "$tmpfile"
+      return 1
+    fi
+    cat "$tmpfile"
+    rm -f "$tmpfile"
+  fi
+}
+
+# --- Watch mode ---
+if [ "$WATCH" = true ]; then
+  echo "Watching '$INPUT' for changes (Ctrl+C to stop) ..." >&2
+  render
+  LAST_HASH=""
+  while true; do
+    HASH="$(md5sum "$INPUT" 2>/dev/null || md5 -q "$INPUT" 2>/dev/null || stat -f%m "$INPUT" 2>/dev/null || stat -c%Y "$INPUT" 2>/dev/null)"
+    if [ "$HASH" != "$LAST_HASH" ] && [ -n "$LAST_HASH" ]; then
+      echo "" >&2
+      echo "--- Change detected at $(date +%H:%M:%S) ---" >&2
+      render
+    fi
+    LAST_HASH="$HASH"
+    sleep 1
+  done
+else
+  render
+fi

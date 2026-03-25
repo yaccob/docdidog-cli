@@ -1,0 +1,79 @@
+#!/bin/sh
+set -e
+
+VERSION="1.7.0"
+
+usage() {
+  cat <<EOF
+docdidog-serve v${VERSION} — Start the docdidog HTTP rendering server
+
+Usage: docdidog-serve [PORT]
+
+Options:
+  -h, --help            Show this help
+
+Environment:
+  DOCDIDOG_PORT           Alternative to PORT argument (default: 3300)
+
+Examples:
+  docdidog-serve                        # listen on port 3300
+  docdidog-serve 8080                   # listen on port 8080
+
+Docker:
+  docker run -d -p 3300:3300 yaccob/docdidog docdidog-serve
+
+API:
+  POST /render    Markdown body → HTML or PDF response
+  GET  /health    → 200 "ok"
+
+  See openapi.yaml for full API documentation.
+EOF
+  exit 0
+}
+
+PORT=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)      usage ;;
+    -*)             echo "Unknown option: $1" >&2; usage ;;
+    *)              PORT="$1"; shift ;;
+  esac
+done
+
+if [ -n "$PORT" ]; then
+  export DOCDIDOG_PORT="$PORT"
+fi
+
+# Find docdidog-server.mjs
+SERVER_SCRIPT=""
+for dir in \
+  "$(dirname "$0")/../share/docdidog" \
+  "/usr/local/share/docdidog" \
+  "$(dirname "$0")/../../server"
+do
+  if [ -f "$dir/docdidog-server.mjs" ]; then
+    SERVER_SCRIPT="$dir/docdidog-server.mjs"
+    break
+  fi
+done
+
+if [ -z "$SERVER_SCRIPT" ]; then
+  echo "Error: docdidog-server.mjs not found." >&2
+  exit 1
+fi
+
+# Start mermaid render server if available (keeps Chromium alive)
+MERMAID_SERVER_SCRIPT="/usr/local/lib/node_modules/@mermaid-js/mermaid-cli/mermaid-server.mjs"
+if [ -f "$MERMAID_SERVER_SCRIPT" ]; then
+  node "$MERMAID_SERVER_SCRIPT" &
+  for _ in $(seq 1 30); do
+    if [ -f /tmp/mermaid-server.ready ]; then break; fi
+    sleep 0.2
+  done
+  if [ -f /tmp/mermaid-server.ready ]; then
+    export MERMAID_SERVER="http://127.0.0.1:$(cat /tmp/mermaid-server.ready)"
+  fi
+fi
+
+exec node "$SERVER_SCRIPT"
