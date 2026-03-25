@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "allow": [
+      "Bash(*)",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Agent",
+      "WebFetch",
+      "WebSearch",
+      "Skill"
+    ],
+    "ask": [
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(gh release:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.command // empty' | { read -r cmd; case \"$cmd\" in git\\ commit*) if [ ! -f /tmp/claude-test-passed-docdidog-cli.txt ]; then echo '{\"decision\":\"block\",\"reason\":\"Tests not run yet. Run /test first.\"}'; else echo '{}'; fi ;; *) echo '{}' ;; esac; }"
+          }
+        ]
+      }
+    ]
+  }
+}
